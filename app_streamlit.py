@@ -18,8 +18,8 @@ import altair as alt
 # -----------------------------
 # GLOBAL SETTINGS
 # -----------------------------
-REPO_ID = "Uyane/tesco-project"   # dataset repository
-REPO_TYPE = "dataset"             # ✅ tell Hugging Face it’s a dataset
+REPO_ID = "Uyane/tesco-project"
+REPO_TYPE = "dataset"  # dataset type
 
 st.set_page_config(page_title="Retail Demand & Commodity Risk Dashboard", layout="wide")
 st.title("📊 Retail Demand & Commodity Risk Dashboard")
@@ -33,7 +33,7 @@ def load_csv(filename, parse_dates=None):
     try:
         path = hf_hub_download(
             repo_id=REPO_ID,
-            repo_type=REPO_TYPE,              # ✅ dataset flag
+            repo_type=REPO_TYPE,
             filename=filename,
             token=st.secrets["HF_TOKEN"]
         )
@@ -49,7 +49,7 @@ def load_model(filename):
     try:
         path = hf_hub_download(
             repo_id=REPO_ID,
-            repo_type=REPO_TYPE,              # ✅ dataset flag
+            repo_type=REPO_TYPE,
             filename=filename,
             token=st.secrets["HF_TOKEN"]
         )
@@ -57,8 +57,9 @@ def load_model(filename):
     except Exception as e:
         st.error(f"❌ Failed to load model {filename}: {e}")
         return None
+
 # -----------------------------
-# LOAD ALL DATASETS
+# LOAD DATASETS
 # -----------------------------
 with st.spinner("📡 Fetching datasets from Hugging Face..."):
     stores = load_csv("data/stores.csv")
@@ -85,7 +86,6 @@ view_choice = st.sidebar.radio(
         "Commodity Insights",
         "Forecasts",
         "Hedging Simulator",
-        "RAG + LLM Explainer",
     ],
 )
 
@@ -204,11 +204,12 @@ elif view_choice == "Forecasts":
             for lag in [1, 7, 14]:
                 df[f"lag_{lag}"] = df["units_sold"].shift(lag)
             df["ma_7"] = df["units_sold"].rolling(7, min_periods=1).mean()
-            df = df.dropna()
-            feats = [
-                "lag_1", "lag_7", "lag_14", "ma_7",
-                "on_promo", "stockout", "price", "avg_temp", "dow",
-            ]
+            # Only keep features that exist
+            feats = ["lag_1","lag_7","lag_14","ma_7","on_promo","stockout","price","dow"]
+            missing = [f for f in feats if f not in df.columns]
+            for f in missing:
+                df[f] = 0
+            df[feats] = df[feats].fillna(0)
             preds = model.predict(df[feats].tail(30))
             st.line_chart(pd.Series(preds, index=df["date"].tail(30)))
 
@@ -220,7 +221,7 @@ elif view_choice == "Forecasts":
             df["lag_7"] = df["wheat_spot"].shift(7)
             df["ma_7"] = df["wheat_spot"].rolling(7, min_periods=1).mean()
             df = df.dropna()
-            preds = model.predict(df[["lag_1", "lag_7", "ma_7"]].tail(30))
+            preds = model.predict(df[["lag_1","lag_7","ma_7"]].tail(30))
             st.line_chart(pd.Series(preds, index=df["date"].tail(30)))
 
 # -----------------------------
@@ -235,7 +236,7 @@ elif view_choice == "Hedging Simulator":
     n_sims = st.slider("Number of Simulations", 200, 2000, 500)
 
     if st.button("Run Simulation"):
-        comm = load_commodities_safe(token=st.secrets["HF_TOKEN"])
+        comm = load_commodities_safe()  # ✅ use local CSV
         basket = {
             "wheat_spot": {"share": 0.6},
             "dairy_spot": {"share": 0.3},
@@ -255,34 +256,5 @@ elif view_choice == "Hedging Simulator":
             "p50": np.percentile(agg_pnls, 50, axis=0),
             "p95": np.percentile(agg_pnls, 95, axis=0),
         })
-        st.line_chart(df_summary[["p5", "p50", "p95"]])
+        st.line_chart(df_summary[["p5","p50","p95"]])
         st.success("Simulation complete ✅")
-
-# -----------------------------
-# RAG + LLM EXPLAINER
-# -----------------------------
-elif view_choice == "RAG + LLM Explainer":
-    st.subheader("💬 Ask Questions About Store S01")
-    from rag_llm_explainer import build_knowledge_base, retrieve, call_openai_with_context
-
-    kb_path = hf_hub_download(
-        repo_id=REPO_ID, filename="knowledge/kb.csv", token=st.secrets["HF_TOKEN"]
-    )
-
-    query = st.text_input(
-        "Enter your question:",
-        value="Why did store S01 see a drop in sales last week?",
-    )
-
-    if st.button("Get Answer"):
-        context = retrieve(query)
-        if context:
-            answer = call_openai_with_context(query, context)
-            st.write("**Retrieved Context:**")
-            for c in context:
-                st.write("-", c)
-            st.write("**LLM Answer:**")
-            st.success(answer)
-        else:
-            st.warning("No relevant context found.")
-
