@@ -18,7 +18,8 @@ import altair as alt
 # -----------------------------
 # GLOBAL SETTINGS
 # -----------------------------
-REPO_ID = "Uyane/tesco-project"
+REPO_ID = "Uyane/tesco-project"   # dataset repository
+REPO_TYPE = "dataset"             # ✅ tell Hugging Face it’s a dataset
 
 st.set_page_config(page_title="Retail Demand & Commodity Risk Dashboard", layout="wide")
 st.title("📊 Retail Demand & Commodity Risk Dashboard")
@@ -28,9 +29,14 @@ st.title("📊 Retail Demand & Commodity Risk Dashboard")
 # -----------------------------
 @st.cache_data
 def load_csv(filename, parse_dates=None):
-    """Load CSV from Hugging Face repo with authentication token."""
+    """Load CSV from Hugging Face dataset repo."""
     try:
-        path = hf_hub_download(repo_id=REPO_ID, filename=filename, token=st.secrets["HF_TOKEN"])
+        path = hf_hub_download(
+            repo_id=REPO_ID,
+            repo_type=REPO_TYPE,              # ✅ dataset flag
+            filename=filename,
+            token=st.secrets["HF_TOKEN"]
+        )
         df = pd.read_csv(path, parse_dates=parse_dates)
         return df
     except Exception as e:
@@ -39,14 +45,18 @@ def load_csv(filename, parse_dates=None):
 
 @st.cache_resource
 def load_model(filename):
-    """Load Joblib model from Hugging Face repo with authentication token."""
+    """Load Joblib model from Hugging Face dataset repo."""
     try:
-        path = hf_hub_download(repo_id=REPO_ID, filename=filename, token=st.secrets["HF_TOKEN"])
+        path = hf_hub_download(
+            repo_id=REPO_ID,
+            repo_type=REPO_TYPE,              # ✅ dataset flag
+            filename=filename,
+            token=st.secrets["HF_TOKEN"]
+        )
         return joblib.load(path)
     except Exception as e:
         st.error(f"❌ Failed to load model {filename}: {e}")
         return None
-
 # -----------------------------
 # LOAD ALL DATASETS
 # -----------------------------
@@ -275,3 +285,4 @@ elif view_choice == "RAG + LLM Explainer":
             st.success(answer)
         else:
             st.warning("No relevant context found.")
+
