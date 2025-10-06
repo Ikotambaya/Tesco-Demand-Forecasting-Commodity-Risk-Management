@@ -8,5 +8,6 @@ openai
 yfinance
 xlsxwriter
 altair
-# Env files
+huggingface_hub
+
 .env
