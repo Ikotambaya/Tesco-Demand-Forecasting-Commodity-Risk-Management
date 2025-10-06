@@ -11,7 +11,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import os
 from datetime import datetime
 from huggingface_hub import hf_hub_download
 import altair as alt
@@ -29,9 +28,9 @@ st.title("📊 Retail Demand & Commodity Risk Dashboard")
 # -----------------------------
 @st.cache_data
 def load_csv(filename, parse_dates=None):
-    """Load CSV from Hugging Face repo."""
+    """Load CSV from Hugging Face repo with authentication token."""
     try:
-        path = hf_hub_download(repo_id=REPO_ID, filename=filename)
+        path = hf_hub_download(repo_id=REPO_ID, filename=filename, token=st.secrets["HF_TOKEN"])
         df = pd.read_csv(path, parse_dates=parse_dates)
         return df
     except Exception as e:
@@ -40,9 +39,9 @@ def load_csv(filename, parse_dates=None):
 
 @st.cache_resource
 def load_model(filename):
-    """Load Joblib model from Hugging Face repo."""
+    """Load Joblib model from Hugging Face repo with authentication token."""
     try:
-        path = hf_hub_download(repo_id=REPO_ID, filename=filename)
+        path = hf_hub_download(repo_id=REPO_ID, filename=filename, token=st.secrets["HF_TOKEN"])
         return joblib.load(path)
     except Exception as e:
         st.error(f"❌ Failed to load model {filename}: {e}")
@@ -62,11 +61,10 @@ with st.spinner("📡 Fetching datasets from Hugging Face..."):
 # SIDEBAR
 # -----------------------------
 st.sidebar.header("🔎 Controls")
-
-if not stores.empty:
-    store_choice = st.sidebar.selectbox("Select Store", stores["store_id"].unique())
-else:
-    store_choice = None
+store_choice = (
+    st.sidebar.selectbox("Select Store", stores["store_id"].unique())
+    if not stores.empty else None
+)
 
 view_choice = st.sidebar.radio(
     "Choose View",
@@ -186,10 +184,8 @@ elif view_choice == "Commodity Insights" and not commodities.empty:
 # -----------------------------
 elif view_choice == "Forecasts":
     st.subheader("🔮 Machine Learning Forecasts")
-
     tab1, tab2 = st.tabs(["Store Demand Forecast", "Commodity Forecast"])
 
-    # Store Forecast
     with tab1:
         model = load_model("models/rf_store_nextday.joblib")
         if model and not agg.empty:
@@ -200,20 +196,12 @@ elif view_choice == "Forecasts":
             df["ma_7"] = df["units_sold"].rolling(7, min_periods=1).mean()
             df = df.dropna()
             feats = [
-                "lag_1",
-                "lag_7",
-                "lag_14",
-                "ma_7",
-                "on_promo",
-                "stockout",
-                "price",
-                "avg_temp",
-                "dow",
+                "lag_1", "lag_7", "lag_14", "ma_7",
+                "on_promo", "stockout", "price", "avg_temp", "dow",
             ]
             preds = model.predict(df[feats].tail(30))
             st.line_chart(pd.Series(preds, index=df["date"].tail(30)))
 
-    # Commodity Forecast
     with tab2:
         model = load_model("models/rf_wheat_nextday.joblib")
         if model and not commodities.empty:
@@ -230,18 +218,14 @@ elif view_choice == "Forecasts":
 # -----------------------------
 elif view_choice == "Hedging Simulator":
     st.subheader("🛡️ Hedging Simulation")
-    from hedging_simulator import (
-        load_commodities_safe,
-        residual_bootstrap_sim,
-        compute_pnl_for_basket,
-    )
+    from hedging_simulator import load_commodities_safe, residual_bootstrap_sim, compute_pnl_for_basket
 
     notional = st.number_input("Notional GBP Exposure", value=1_000_000)
     days = st.slider("Simulation Horizon (days)", 30, 180, 90)
     n_sims = st.slider("Number of Simulations", 200, 2000, 500)
 
     if st.button("Run Simulation"):
-        comm = load_commodities_safe()
+        comm = load_commodities_safe(token=st.secrets["HF_TOKEN"])
         basket = {
             "wheat_spot": {"share": 0.6},
             "dairy_spot": {"share": 0.3},
@@ -256,13 +240,11 @@ elif view_choice == "Hedging Simulator":
             pnl = compute_pnl_for_basket(sims_dict[col], info, notional)
             agg_pnls = pnl if agg_pnls is None else agg_pnls + pnl
 
-        df_summary = pd.DataFrame(
-            {
-                "p5": np.percentile(agg_pnls, 5, axis=0),
-                "p50": np.percentile(agg_pnls, 50, axis=0),
-                "p95": np.percentile(agg_pnls, 95, axis=0),
-            }
-        )
+        df_summary = pd.DataFrame({
+            "p5": np.percentile(agg_pnls, 5, axis=0),
+            "p50": np.percentile(agg_pnls, 50, axis=0),
+            "p95": np.percentile(agg_pnls, 95, axis=0),
+        })
         st.line_chart(df_summary[["p5", "p50", "p95"]])
         st.success("Simulation complete ✅")
 
@@ -271,10 +253,11 @@ elif view_choice == "Hedging Simulator":
 # -----------------------------
 elif view_choice == "RAG + LLM Explainer":
     st.subheader("💬 Ask Questions About Store S01")
-
     from rag_llm_explainer import build_knowledge_base, retrieve, call_openai_with_context
 
-    kb_path = hf_hub_download(repo_id=REPO_ID, filename="knowledge/kb.csv")
+    kb_path = hf_hub_download(
+        repo_id=REPO_ID, filename="knowledge/kb.csv", token=st.secrets["HF_TOKEN"]
+    )
 
     query = st.text_input(
         "Enter your question:",
