@@ -57,12 +57,15 @@ def load_model(filename):
     except Exception as e:
         st.error(f"❌ Failed to load model {filename}: {e}")
         return None
-
-stores = load_csv("stores.csv")
-skus = load_csv("skus.csv")
-sales = load_csv("sales_data.csv", parse_dates=['date'])
-agg = load_csv("daily_store_agg.csv", parse_dates=['date'])
-commodities = load_csv("commodities.csv", parse_dates=['date'])
+# -----------------------------
+# LOAD ALL DATASETS
+# -----------------------------
+with st.spinner("📡 Fetching datasets from Hugging Face..."):
+    stores = load_csv("data/stores.csv")
+    skus = load_csv("data/skus.csv")
+    sales = load_csv("data/sales_data.csv", parse_dates=["date"])
+    agg = load_csv("data/daily_store_agg.csv", parse_dates=["date"])
+    commodities = load_csv("data/commodities.csv", parse_dates=["date"])
 
 # -----------------
 # Sidebar controls
@@ -316,3 +319,4 @@ elif view_choice == "RAG + LLM Explainer":
         st.info("Enter a question and click **Get Answer** to see recommendations.")
     else:
         st.warning("No relevant context found in KB.")
+
