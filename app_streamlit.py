@@ -22,6 +22,9 @@ from typing import Dict, Any
 # GLOBAL SETTINGS
 # -----------------------------
 
+DATA_REPO_ID = "Uyane/tesco-project"
+DATA_REPO_TYPE = "dataset"  # everything is in the dataset repo
+
 # -----------------------------
 # DIRECTORY PATHS (Hugging Face structure)
 # -----------------------------
@@ -30,8 +33,6 @@ MODEL_DIR = "models"
 KNOW_DIR = "knowledge"
 SIM_DIR = "sim_results"
 
-DATA_REPO_ID = "Uyane/tesco-project"
-DATA_REPO_TYPE = "dataset"  # everything is in the dataset repo
 
 # optional HF token from Streamlit secrets (if repo is private)
 HF_TOKEN = st.secrets.get("HF_TOKEN", None)
@@ -443,4 +444,5 @@ elif view_choice == "RAG + LLM Explainer":
 # -----------------------------
 # END
 # -----------------------------
+
 
