@@ -223,71 +223,78 @@ elif view_choice == "Forecasts":
         else:
             st.error("Commodity forecast model not available")
 
-# -----------------------------
-# HEDGING SIMULATOR
-# -----------------------------
+# -----------------
+# Hedging Simulator
+# -----------------
 elif view_choice == "Hedging Simulator":
     st.subheader("🛡️ Hedging Simulation")
+    notional = st.number_input("Notional GBP exposure", value=1_000_000, step=50_000)
+    days = st.slider("Simulation horizon (days)", min_value=30, max_value=180, value=90)
+    n_sims = st.slider("Number of simulations", min_value=200, max_value=2000, value=500)
 
-    # Load precomputed simulation results from Hugging Face
-    try:
-        summary_path = hf_hub_download(
-            repo_id=DATA_REPO_ID,
-            repo_type=DATA_REPO_TYPE,
-            filename="sim_results/hedge_sim_summary.csv",
-            token=st.secrets["HF_TOKEN"]
-        )
-        scenarios_path = hf_hub_download(
-            repo_id=DATA_REPO_ID,
-            repo_type=DATA_REPO_TYPE,
-            filename="sim_results/hedge_sim_scenarios_top200.csv",
-            token=st.secrets["HF_TOKEN"]
-        )
-        df_summary = pd.read_csv(summary_path)
-        df_scenarios = pd.read_csv(scenarios_path)
-    except Exception as e:
-        st.error(f"❌ Failed to load precomputed simulation results: {e}")
-        df_summary = pd.DataFrame()
-        df_scenarios = pd.DataFrame()
+    if st.button("Run Simulation"):
+        from hedging_simulator import load_commodities_safe, residual_bootstrap_sim, compute_pnl_for_basket
+        comm = load_commodities_safe()
+        basket = {'wheat_spot': {'share':0.6}, 'dairy_spot': {'share':0.3}, 'oilseed_spot': {'share':0.1}}
+        sims_dict, agg_pnls = {}, None
+        for col in basket:
+            sims = residual_bootstrap_sim(comm[col], n_days=days, n_sims=n_sims)
+            sims_dict[col] = sims
+            basket[col]['last_price'] = comm[col].iloc[-1]
+        for col, info in basket.items():
+            pnl = compute_pnl_for_basket(sims_dict[col], info, notional)
+            agg_pnls = pnl if agg_pnls is None else agg_pnls + pnl
 
-    if not df_summary.empty and not df_scenarios.empty:
-        st.subheader("Aggregated P&L Summary")
-        st.line_chart(df_summary[['p5', 'p50', 'p95']])
+        df_summary = pd.DataFrame({
+            "mean": agg_pnls.mean(axis=0),
+            "p5": np.percentile(agg_pnls,5,axis=0),
+            "p50": np.percentile(agg_pnls,50,axis=0),
+            "p95": np.percentile(agg_pnls,95,axis=0),
+        })
+        st.line_chart(df_summary[['p5','p50','p95']])
         st.write("Summary at key horizons:")
-        for d in [29, 59, min(89, len(df_summary)-1)]:
+        for d in [29,59,min(89,days-1)]:
             st.write(f"Day {d+1}: mean {df_summary['mean'].iloc[d]:,.0f}, "
                      f"p5 {df_summary['p5'].iloc[d]:,.0f}, "
                      f"p95 {df_summary['p95'].iloc[d]:,.0f}")
+        st.success("Simulation complete ✅")
 
-        st.subheader("Top simulated scenarios (first 10 days)")
-        for col in df_scenarios.columns[:3]:  # assuming first 3 columns are commodities
-            st.write(f"**{col}**")
-            st.dataframe(df_scenarios[col].head(5).to_frame())  # show top 5 scenarios
-        st.success("Simulation results loaded ✅")
-    else:
-        st.warning("Simulation results not available. Ensure files exist on Hugging Face.")
-
-# -----------------------------
-# RAG + LLM Explainer
-# -----------------------------
+# -----------------
+# RAG + LLM Explainer (single-store S01)
+# -----------------
 elif view_choice == "RAG + LLM Explainer":
     st.subheader("💬 Ask Questions About Store S01")
     from rag_llm_explainer import build_knowledge_base, retrieve, call_openai_with_context
 
-    kb_path = hf_hub_download(DATA_REPO_ID, repo_type=DATA_REPO_TYPE, filename="knowledge/kb.csv", token=st.secrets["HF_TOKEN"])
-    build_knowledge_base()  # ensure KB exists
+    kb_path = os.path.join(KNOW_DIR, "kb.csv")
+    if not os.path.exists(kb_path):
+        build_knowledge_base()
 
-    query = st.text_input("Enter your question about Store S01:", value="Why did store S01 see a drop in units last week?")
+    query = st.text_input(
+        "Enter your question about Store S01:",
+        value="Why did store S01 see a drop in units last week?"
+    )
+
+    if "rag_answer" not in st.session_state:
+        st.session_state.rag_answer = None
+        st.session_state.rag_context = []
+
     if st.button("Get Answer") and query.strip():
         context = retrieve(query)
+        st.session_state.rag_context = context
         if context:
-            answer = call_openai_with_context(query, context)
-            st.write("**Retrieved Context:**")
-            for c in context:
-                st.write(f"- {c}")
-            st.write("**LLM Answer / Recommendation:**")
-            st.success(answer)
+            st.session_state.rag_answer = call_openai_with_context(query, context)
         else:
-            st.warning("No relevant context found in KB.")
+            st.session_state.rag_answer = None
 
-
+    if st.session_state.rag_answer:
+        if st.session_state.rag_context:
+            st.write("**Retrieved Context:**")
+            for c in st.session_state.rag_context:
+                st.write(f"- {c}")
+        st.write("**LLM Answer / Recommendation:**")
+        st.success(st.session_state.rag_answer)
+    elif st.session_state.rag_answer is None and st.session_state.rag_context == []:
+        st.info("Enter a question and click **Get Answer** to see recommendations.")
+    else:
+        st.warning("No relevant context found in KB.")
