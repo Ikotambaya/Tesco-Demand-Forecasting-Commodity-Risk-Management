@@ -227,16 +227,21 @@ elif view_choice == "Forecasts":
 # HEDGING SIMULATOR
 # -----------------------------
 elif view_choice == "Hedging Simulator":
-    st.subheader("🛡️ Hedging Simulation (Precomputed Results)")
+    st.subheader("🛡️ Hedging Simulation")
 
-    # Simulation controls (for display purposes only)
+    # Simulation controls
     notional = st.number_input("Notional GBP exposure", value=1_000_000, step=50_000)
     days = st.slider("Simulation horizon (days)", min_value=30, max_value=180, value=90)
     n_sims = st.slider("Number of simulations", min_value=200, max_value=2000, value=500)
 
-    with st.spinner("📡 Loading precomputed simulation results from Hugging Face..."):
+    # Initialize session state for results
+    if "agg_pnls" not in st.session_state:
+        st.session_state.agg_pnls = None
+        st.session_state.sims_dict = {}
+
+    # Try loading precomputed results (non-blocking)
+    if st.session_state.agg_pnls is None:
         try:
-            # Load precomputed summary
             summary_path = hf_hub_download(
                 repo_id=DATA_REPO_ID,
                 repo_type=DATA_REPO_TYPE,
@@ -245,7 +250,6 @@ elif view_choice == "Hedging Simulator":
             )
             df_summary = pd.read_csv(summary_path, index_col=0)
 
-            # Load precomputed top scenarios
             scenarios_path = hf_hub_download(
                 repo_id=DATA_REPO_ID,
                 repo_type=DATA_REPO_TYPE,
@@ -254,25 +258,70 @@ elif view_choice == "Hedging Simulator":
             )
             df_scenarios = pd.read_csv(scenarios_path, index_col=0)
 
-            # Display summary chart
+            st.session_state.agg_pnls = df_summary
+            st.session_state.sims_dict = df_scenarios
+            st.info("Precomputed simulation results loaded. You can still run a new simulation below.")
+        except Exception:
+            st.warning("No precomputed results found. Run a new simulation.")
+
+    run_sim = st.button("Run New Simulation")
+
+    if run_sim:
+        from hedging_simulator import load_commodities_safe, residual_bootstrap_sim, compute_pnl_for_basket
+
+        comm = load_commodities_safe()
+        basket = {
+            "wheat_spot": {"share": 0.6},
+            "dairy_spot": {"share": 0.3},
+            "oilseed_spot": {"share": 0.1}
+        }
+        sims_dict = {}
+        agg_pnls = None
+
+        # Run simulations per commodity
+        for col in basket:
+            sims = residual_bootstrap_sim(comm[col], n_days=days, n_sims=n_sims)
+            sims_dict[col] = sims
+            basket[col]["last_price"] = comm[col].iloc[-1]
+
+        # Compute aggregated P&L
+        for col, info in basket.items():
+            pnl = compute_pnl_for_basket(sims_dict[col], info, notional)
+            agg_pnls = pnl if agg_pnls is None else agg_pnls + pnl
+
+        # Save to session state
+        st.session_state.agg_pnls = agg_pnls
+        st.session_state.sims_dict = sims_dict
+
+    # Display results (either precomputed or newly run)
+    if st.session_state.agg_pnls is not None:
+        agg_pnls = st.session_state.agg_pnls
+        sims_dict = st.session_state.sims_dict
+
+        # Summary chart
+        if isinstance(agg_pnls, pd.DataFrame):
+            st.line_chart(agg_pnls[['p5', 'p50', 'p95']])
+        else:
+            df_summary = pd.DataFrame({
+                "mean": agg_pnls.mean(axis=0),
+                "p5": np.percentile(agg_pnls, 5, axis=0),
+                "p50": np.percentile(agg_pnls, 50, axis=0),
+                "p95": np.percentile(agg_pnls, 95, axis=0),
+            })
             st.line_chart(df_summary[['p5', 'p50', 'p95']])
-            st.write("Summary at key horizons:")
-            for d in [29, 59, min(89, len(df_summary)-1)]:
-                st.write(f"Day {d+1}: mean {df_summary['mean'].iloc[d]:,.0f}, "
-                         f"p5 {df_summary['p5'].iloc[d]:,.0f}, "
-                         f"p95 {df_summary['p95'].iloc[d]:,.0f}")
 
-            # Display top scenarios
-            st.subheader("Top 5 simulated scenarios per commodity (first 10 days)")
-            for com in ["wheat_spot", "dairy_spot", "oilseed_spot"]:
-                st.write(f"**{com}**")
-                cols = [f"Day {i+1}" for i in range(10)]
-                st.dataframe(df_scenarios[df_scenarios['commodity']==com].iloc[:5][cols])
+        st.write("Summary at key horizons:")
+        for d in [29, 59, min(89, days - 1)]:
+            st.write(f"Day {d+1}: mean {agg_pnls['mean'].iloc[d]:,.0f}, "
+                     f"p5 {agg_pnls['p5'].iloc[d]:,.0f}, "
+                     f"p95 {agg_pnls['p95'].iloc[d]:,.0f}")
 
-            st.success("Simulation results loaded ✅")
-
-        except Exception as e:
-            st.error(f"❌ Failed to load hedging simulation results: {e}")
+        # Top 5 scenarios per commodity (first 10 days)
+        st.subheader("Top 5 simulated scenarios per commodity (first 10 days)")
+        for com in ["wheat_spot", "dairy_spot", "oilseed_spot"]:
+            st.write(f"**{com}**")
+            df_scen_com = sims_dict[sims_dict['commodity']==com] if isinstance(sims_dict, pd.DataFrame) else pd.DataFrame(sims_dict[com][:5, :10])
+            st.dataframe(df_scen_com)
 
 # -----------------
 # RAG + LLM Explainer (single-store S01)
@@ -313,4 +362,5 @@ elif view_choice == "RAG + LLM Explainer":
         st.info("Enter a question and click **Get Answer** to see recommendations.")
     else:
         st.warning("No relevant context found in KB.")
+
 
