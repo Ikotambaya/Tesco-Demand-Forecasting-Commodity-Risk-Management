@@ -1,188 +1,155 @@
+# hedging_simulator.py
 """
-Retail Demand & Commodity Risk Dashboard
-All data, models, and knowledge hosted on Hugging Face.
+Robust Monte-Carlo Hedging Simulator for Commodity Exposure
+- Supports dynamic baskets and safe loading of historical data
+- Residual bootstrapped AR(1) simulations
+- Computes P&L per commodity and aggregates
+- Saves scenario summaries and top scenarios
 """
 
-import streamlit as st
-import pandas as pd
+from pathlib import Path
+import logging
 import numpy as np
-import joblib
-from huggingface_hub import hf_hub_download
-import altair as alt
-from hedging_simulator import load_commodities_safe, residual_bootstrap_sim, compute_pnl_for_basket
+import pandas as pd
+from typing import Dict, Any, Tuple
 
-# -----------------------------
-# GLOBAL SETTINGS
-# -----------------------------
-REPO_ID = "Uyane/tesco-project"
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 
-st.set_page_config(page_title="Retail Demand & Commodity Risk Dashboard", layout="wide")
-st.title("📊 Retail Demand & Commodity Risk Dashboard")
+DATA_DIR = Path("data")
+OUT_DIR = Path("sim_results")
+OUT_DIR.mkdir(exist_ok=True)
 
-# -----------------------------
-# HELPERS
-# -----------------------------
-@st.cache_data
-def load_csv(filename, parse_dates=None):
+# -------------------------------
+# Load Commodities Safely
+# -------------------------------
+def load_commodities_safe() -> pd.DataFrame:
+    """
+    Loads and validates commodities CSV. Returns DataFrame indexed by date.
+    """
+    path = DATA_DIR / "commodities.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing commodity CSV: {path}")
+    comm = pd.read_csv(path, parse_dates=['date'])
+    required_cols = ['wheat_spot','dairy_spot','oilseed_spot']
+    missing = [c for c in required_cols if c not in comm.columns]
+    if missing:
+        raise ValueError(f"Missing columns in commodities CSV: {missing}")
+    comm = comm.sort_values('date').set_index('date')
+    return comm
+
+# -------------------------------
+# Residual Bootstrapped AR(1)
+# -------------------------------
+def residual_bootstrap_sim(series: pd.Series, n_days: int = 90, n_sims: int = 2000) -> np.ndarray:
+    """
+    Simulates future price paths using AR(1) with bootstrapped residuals.
+    """
+    s = series.dropna()
+    if s.empty:
+        raise ValueError("Input series is empty")
+    diffs = s.diff().dropna()
+    if diffs.empty:
+        raise ValueError("Series too short for differencing")
+    mu = diffs.mean()
+    resid = diffs - mu
+    sims = np.zeros((n_sims, n_days))
+    last = s.iloc[-1]
+    for i in range(n_sims):
+        path = [last]
+        for d in range(n_days):
+            e = np.random.choice(resid.values)
+            nxt = path[-1] + mu + e
+            path.append(nxt)
+        sims[i, :] = path[1:]
+    return sims
+
+# -------------------------------
+# Compute P&L per commodity
+# -------------------------------
+def compute_pnl_for_basket(sims: np.ndarray, weight: Dict[str, Any], notional: float) -> np.ndarray:
+    """
+    Computes P&L for a single commodity basket.
+    """
+    last = weight.get('last_price')
+    share = weight.get('share')
+    if last is None or share is None or not (0 <= share <= 1):
+        raise ValueError("weight dict must contain 'last_price' and valid 'share'")
+    pct_changes = (sims - last) / last
+    pnl = pct_changes * (notional * share)
+    return pnl
+
+# -------------------------------
+# Run Simulation
+# -------------------------------
+def run_hedging_sim(
+    basket: Dict[str, Dict[str, Any]] = None,
+    notional: float = 1_000_000,
+    n_days: int = 90,
+    n_sims: int = 2000,
+    random_seed: int = None
+) -> Tuple[np.ndarray, pd.DataFrame, Dict[str, np.ndarray]]:
+    """
+    Runs hedging simulation for given basket and parameters.
+    Returns:
+        - Aggregate P&L (n_sims x n_days)
+        - Summary DataFrame (mean, p5, p50, p95 per key day)
+        - Individual commodity simulations
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    if basket is None:
+        basket = {
+            'wheat_spot': {'share':0.6},
+            'dairy_spot': {'share':0.3},
+            'oilseed_spot': {'share':0.1}
+        }
+
+    comm = load_commodities_safe()
+    sims_dict = {}
+
+    # Run simulations for each commodity
+    for col, info in basket.items():
+        if col not in comm.columns:
+            logging.warning(f"{col} not found in commodity data, skipping")
+            continue
+        sims = residual_bootstrap_sim(comm[col], n_days=n_days, n_sims=n_sims)
+        sims_dict[col] = sims
+        basket[col]['last_price'] = comm[col].iloc[-1]
+
+    # Aggregate P&L
+    agg_pnls = np.zeros((n_sims, n_days))
+    for col, info in basket.items():
+        pnl = compute_pnl_for_basket(sims_dict[col], info, notional)
+        agg_pnls += pnl
+
+    # Summarize key days
+    summary_days = [29, 59, min(89, n_days-1)]  # 30d, 60d, 90d
+    summary = {}
+    for day_idx in summary_days:
+        arr = agg_pnls[:, day_idx]
+        summary[f"Day {day_idx+1}"] = {
+            "mean": float(np.mean(arr)),
+            "p5": float(np.percentile(arr, 5)),
+            "p50": float(np.percentile(arr, 50)),
+            "p95": float(np.percentile(arr, 95))
+        }
+
+    summary_df = pd.DataFrame(summary).T
+
+    # Save outputs
     try:
-        path = hf_hub_download(repo_id=REPO_ID, filename=filename)
-        df = pd.read_csv(path, parse_dates=parse_dates)
-        return df
+        summary_df.to_csv(OUT_DIR / "hedge_sim_summary.csv")
+        pd.DataFrame(agg_pnls[:200, :n_days]).to_csv(OUT_DIR / "hedge_sim_scenarios_top200.csv", index=False)
     except Exception as e:
-        st.error(f"❌ Failed to load {filename}: {e}")
-        return pd.DataFrame()
+        logging.error(f"Error saving simulation outputs: {e}")
 
-@st.cache_resource
-def load_model(filename):
-    try:
-        path = hf_hub_download(repo_id=REPO_ID, filename=f"models/{filename}")
-        return joblib.load(path)
-    except Exception as e:
-        st.error(f"❌ Failed to load model {filename}: {e}")
-        return None
+    logging.info(f"Hedging simulation complete. Summary:\n{summary_df}")
+    return agg_pnls, summary_df, sims_dict
 
-# -----------------------------
-# LOAD DATASETS
-# -----------------------------
-with st.spinner("📡 Fetching datasets from Hugging Face..."):
-    stores = load_csv("data/stores.csv")
-    skus = load_csv("data/skus.csv")
-    sales = load_csv("data/sales_data.csv", parse_dates=["date"])
-    agg = load_csv("data/daily_store_agg.csv", parse_dates=["date"])
-    commodities = load_csv("data/commodities.csv", parse_dates=["date"])
-
-# -----------------------------
-# SIDEBAR
-# -----------------------------
-st.sidebar.header("🔎 Controls")
-store_choice = st.sidebar.selectbox("Select Store", stores["store_id"].unique() if not stores.empty else [])
-view_choice = st.sidebar.radio(
-    "Choose View",
-    ["Store Insights", "Top SKUs", "Sales Insights", "Commodity Insights", "Forecasts", "Hedging Simulator"],
-)
-
-# -----------------------------
-# STORE INSIGHTS
-# -----------------------------
-if view_choice == "Store Insights" and not agg.empty:
-    st.subheader(f"📈 Store Demand Insights — {store_choice}")
-    years = st.slider("Years to display", 1, 30, 15)
-    end_date = agg["date"].max()
-    start_date = end_date - pd.DateOffset(years=years)
-    df = agg[(agg["store_id"] == store_choice) & (agg["date"] >= start_date)]
-    if df.empty:
-        st.warning("No data available for this selection.")
-    else:
-        total_units = df["units_sold"].sum()
-        avg_price = df["price"].mean()
-        promo_days = df["on_promo"].sum()
-        stockouts = df["stockout"].sum()
-        total_revenue = (df["units_sold"] * df["price"]).sum()
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Units Sold", f"{total_units:,.0f}")
-        c2.metric("Avg. Price", f"{avg_price:,.2f}")
-        c3.metric("Promo Days", f"{promo_days:,}")
-        c4.metric("Stockouts", f"{stockouts:,}")
-        c5.metric("Total Revenue", f"${total_revenue:,.0f}")
-        yearly = df.groupby(df["date"].dt.year)["units_sold"].sum().reset_index(name="units_sold")
-        yearly["year"] = pd.to_datetime(yearly["date"].astype(str) + "-01-01")
-        st.line_chart(yearly.set_index("year")["units_sold"])
-        st.caption("Yearly total units sold")
-
-# -----------------------------
-# TOP SKUs
-# -----------------------------
-elif view_choice == "Top SKUs" and not sales.empty:
-    st.subheader(f"🏆 Top SKUs — {store_choice}")
-    df = sales[sales["store_id"] == store_choice]
-    top_skus = df.groupby("sku_id")["units_sold"].sum().sort_values(ascending=False).head(20)
-    st.bar_chart(top_skus)
-    st.dataframe(skus[skus["sku_id"].isin(top_skus.index)])
-
-# -----------------------------
-# SALES INSIGHTS
-# -----------------------------
-elif view_choice == "Sales Insights" and not sales.empty:
-    st.subheader(f"📊 Promotion Impact — {store_choice}")
-    df = sales[sales["store_id"] == store_choice]
-    categories = ["All"] + skus["category"].dropna().unique().tolist()
-    cat_choice = st.selectbox("Filter by Category", categories)
-    if cat_choice != "All":
-        sku_ids = skus[skus["category"] == cat_choice]["sku_id"]
-        df = df[df["sku_id"].isin(sku_ids)]
-    promo_stats = df.groupby("on_promo")["units_sold"].mean().reset_index()
-    promo_stats["promo_label"] = promo_stats["on_promo"].map({0:"No Promo", 1:"Promo"})
-    chart = alt.Chart(promo_stats).mark_bar().encode(
-        x="promo_label:N", y="units_sold:Q", color="promo_label:N",
-        tooltip=["promo_label","units_sold"]
-    ).properties(width=400, height=300, title="Avg Units Sold: Promo vs No Promo")
-    st.altair_chart(chart, use_container_width=True)
-
-# -----------------------------
-# COMMODITY INSIGHTS
-# -----------------------------
-elif view_choice == "Commodity Insights" and not commodities.empty:
-    st.subheader("🌾 Commodity Market Trends")
-    com_choice = st.selectbox("Commodity", ["wheat_spot","dairy_spot","oilseed_spot"])
-    years = st.slider("Years to display", 1, 30, 5)
-    end_date = commodities["date"].max()
-    start_date = end_date - pd.DateOffset(years=years)
-    com_series = commodities.set_index("date")[com_choice]
-    st.line_chart(com_series.loc[start_date:end_date])
-    vol = com_series.pct_change().rolling(90).std()
-    st.line_chart(vol.loc[start_date:end_date])
-    recent = commodities[commodities["date"] >= end_date - pd.DateOffset(years=3)]
-    corr = recent[["wheat_spot","dairy_spot","oilseed_spot"]].pct_change().corr()
-    st.dataframe(corr)
-
-# -----------------------------
-# FORECASTS
-# -----------------------------
-elif view_choice == "Forecasts":
-    st.subheader("🔮 Machine Learning Forecasts")
-    tab1, tab2 = st.tabs(["Store Demand Forecast","Commodity Forecast"])
-    with tab1:
-        model = load_model("rf_store_nextday.joblib")
-        if model and not agg.empty:
-            df = agg[agg["store_id"] == store_choice].sort_values("date")
-            df["dow"] = df["date"].dt.weekday
-            for lag in [1,7,14]: df[f"lag_{lag}"] = df["units_sold"].shift(lag)
-            df["ma_7"] = df["units_sold"].rolling(7,min_periods=1).mean()
-            df = df.dropna()
-            feats = ["lag_1","lag_7","lag_14","ma_7","on_promo","stockout","price","avg_temp","dow"]
-            preds = model.predict(df[feats].tail(30))
-            st.line_chart(pd.Series(preds, index=df["date"].tail(30)))
-    with tab2:
-        model = load_model("rf_wheat_nextday.joblib")
-        if model and not commodities.empty:
-            df = commodities.copy().sort_values("date")
-            df["lag_1"] = df["wheat_spot"].shift(1)
-            df["lag_7"] = df["wheat_spot"].shift(7)
-            df["ma_7"] = df["wheat_spot"].rolling(7,min_periods=1).mean()
-            df = df.dropna()
-            preds = model.predict(df[["lag_1","lag_7","ma_7"]].tail(30))
-            st.line_chart(pd.Series(preds, index=df["date"].tail(30)))
-
-# -----------------------------
-# HEDGING SIMULATOR
-# -----------------------------
-elif view_choice == "Hedging Simulator":
-    st.subheader("🛡️ Hedging Simulation")
-    notional = st.number_input("Notional GBP Exposure", value=1_000_000)
-    days = st.slider("Simulation Horizon (days)", 30, 180, 90)
-    n_sims = st.slider("Number of Simulations", 200, 2000, 500)
-    if st.button("Run Simulation"):
-        basket = {'wheat_spot': {'share':0.6}, 'dairy_spot': {'share':0.3}, 'oilseed_spot': {'share':0.1}}
-        comm = load_commodities_safe()
-        sims_dict = {}
-        for col in basket:
-            sims_dict[col] = residual_bootstrap_sim(comm[col], n_days=days, n_sims=n_sims)
-            basket[col]['last_price'] = comm[col].iloc[-1]
-        agg_pnls = sum([compute_pnl_for_basket(sims_dict[col], basket[col], notional) for col in basket])
-        df_summary = pd.DataFrame({
-            "p5": np.percentile(agg_pnls,5,axis=0),
-            "p50": np.percentile(agg_pnls,50,axis=0),
-            "p95": np.percentile(agg_pnls,95,axis=0)
-        })
-        st.line_chart(df_summary[["p5","p50","p95"]])
-        st.success("Simulation complete ✅")
+# -------------------------------
+# Standalone run
+# -------------------------------
+if __name__ == "__main__":
+    run_hedging_sim()
