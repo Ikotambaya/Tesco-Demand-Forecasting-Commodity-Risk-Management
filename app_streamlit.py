@@ -410,37 +410,52 @@ elif view_choice == "Hedging Simulator":
 elif view_choice == "RAG + LLM Explainer":
     st.subheader("💬 Ask Questions About Store S01")
 
-    # Ensure local knowledge directory exists
+    from huggingface_hub import hf_hub_download
+    import shutil
+
+    # Ensure knowledge dir exists
     KNOW_DIR = "knowledge"
     os.makedirs(KNOW_DIR, exist_ok=True)
 
-    # Try to fetch KB from Hugging Face (if available)
-    from huggingface_hub import hf_hub_download
+    # --- Step 1: Fetch KB from Hugging Face ---
     kb_path = os.path.join(KNOW_DIR, "kb.csv")
     try:
         hf_path = hf_hub_download(
-            repo_id=DATA_REPO_ID,
-            repo_type=DATA_REPO_TYPE,
-            filename="knowledge/kb.csv",
-            token=st.secrets.get("HF_TOKEN", None)
+            repo_id="Uyane/tesco-project",
+            repo_type="dataset",
+            filename="knowledge/kb.csv"
         )
-        if not os.path.exists(kb_path):
-            os.replace(hf_path, kb_path)
+        shutil.copy(hf_path, kb_path)
         st.success("Knowledge base loaded from Hugging Face ✅")
     except Exception as e:
-        st.info(f"knowledge/kb.csv not found on Hugging Face. A local KB will be built. ({e})")
+        st.info(f"knowledge/kb.csv not found on Hugging Face or access denied. A local KB will be built. ({e})")
 
-    # Try to import helper module
+    # --- Step 2: Ensure daily_store_agg.csv exists locally (needed for build_knowledge_base) ---
+    data_path = os.path.join("data", "daily_store_agg.csv")
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(data_path):
+        try:
+            data_hf_path = hf_hub_download(
+                repo_id="Uyane/tesco-project",
+                repo_type="dataset",
+                filename="data/daily_store_agg.csv"
+            )
+            shutil.copy(data_hf_path, data_path)
+            st.success("Data file 'daily_store_agg.csv' downloaded from Hugging Face ✅")
+        except Exception as e:
+            st.error(f"Could not load daily_store_agg.csv from Hugging Face: {e}")
+
+    # --- Step 3: Import and run RAG helper ---
     try:
         from rag_llm_explainer import build_knowledge_base, retrieve, call_openai_with_context
 
-        # Ensure local KB exists
+        # Build KB locally if not found
         if not os.path.exists(kb_path):
             with st.spinner("Building local knowledge base..."):
                 build_knowledge_base()
                 st.success("Knowledge base created locally ✅")
 
-        # UI for user question
+        # UI for query
         query = st.text_input(
             "Enter your question about Store S01:",
             value="Why did store S01 see a drop in units last week?"
@@ -460,7 +475,7 @@ elif view_choice == "RAG + LLM Explainer":
                 else:
                     st.session_state.rag_answer = None
 
-        # Display results
+        # --- Step 4: Display results ---
         if st.session_state.rag_answer:
             if st.session_state.rag_context:
                 st.write("**Retrieved Context:**")
@@ -477,4 +492,3 @@ elif view_choice == "RAG + LLM Explainer":
         st.error("RAG helper module (`rag_llm_explainer.py`) not available. This feature is optional.")
     except Exception as e:
         st.error(f"Unexpected RAG error: {e}")
-
