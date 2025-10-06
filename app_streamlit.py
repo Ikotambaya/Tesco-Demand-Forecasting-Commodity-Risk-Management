@@ -405,44 +405,76 @@ elif view_choice == "Hedging Simulator":
                 st.dataframe(preview)
 
 # -----------------------------
-# RAG + LLM Explainer (optional)
+# RAG + LLM Explainer (single-store S01)
 # -----------------------------
 elif view_choice == "RAG + LLM Explainer":
     st.subheader("💬 Ask Questions About Store S01")
 
-    # try to fetch KB from HF (if present)
-    kb_local = None
-    try:
-        kb_local = hf_download_to_path("knowledge/kb.csv")
-    except Exception:
-        st.info("knowledge/kb.csv not found on Hugging Face or access denied. RAG features may be limited.")
+    # Ensure local knowledge directory exists
+    KNOW_DIR = "knowledge"
+    os.makedirs(KNOW_DIR, exist_ok=True)
 
-    # try to import rag_llm_explainer if it's present
+    # Try to fetch KB from Hugging Face (if available)
+    from huggingface_hub import hf_hub_download
+    kb_path = os.path.join(KNOW_DIR, "kb.csv")
+    try:
+        hf_path = hf_hub_download(
+            repo_id=DATA_REPO_ID,
+            repo_type=DATA_REPO_TYPE,
+            filename="knowledge/kb.csv",
+            token=st.secrets.get("HF_TOKEN", None)
+        )
+        if not os.path.exists(kb_path):
+            os.replace(hf_path, kb_path)
+        st.success("Knowledge base loaded from Hugging Face ✅")
+    except Exception as e:
+        st.info(f"knowledge/kb.csv not found on Hugging Face. A local KB will be built. ({e})")
+
+    # Try to import helper module
     try:
         from rag_llm_explainer import build_knowledge_base, retrieve, call_openai_with_context
-        # ensure KB exists locally (the module may build it)
-        if kb_local is None:
-            try:
+
+        # Ensure local KB exists
+        if not os.path.exists(kb_path):
+            with st.spinner("Building local knowledge base..."):
                 build_knowledge_base()
-            except Exception:
-                pass
-        query = st.text_input("Enter your question about Store S01:", value="Why did store S01 see a drop in units last week?")
+                st.success("Knowledge base created locally ✅")
+
+        # UI for user question
+        query = st.text_input(
+            "Enter your question about Store S01:",
+            value="Why did store S01 see a drop in units last week?"
+        )
+
+        if "rag_answer" not in st.session_state:
+            st.session_state.rag_answer = None
+            st.session_state.rag_context = []
+
         if st.button("Get Answer") and query.strip():
-            context = retrieve(query)
-            if context:
-                answer = call_openai_with_context(query, context)
+            with st.spinner("Retrieving context and generating answer..."):
+                context = retrieve(query)
+                st.session_state.rag_context = context
+                if context:
+                    answer = call_openai_with_context(query, context)
+                    st.session_state.rag_answer = answer
+                else:
+                    st.session_state.rag_answer = None
+
+        # Display results
+        if st.session_state.rag_answer:
+            if st.session_state.rag_context:
                 st.write("**Retrieved Context:**")
-                for c in context:
+                for c in st.session_state.rag_context:
                     st.write(f"- {c}")
-                st.write("**LLM Answer / Recommendation:**")
-                st.success(answer)
-            else:
-                st.warning("No relevant context found in KB.")
-    except Exception:
-        st.error("RAG helper module (`rag_llm_explainer`) not available in the environment. This feature is optional.")
+            st.write("**LLM Answer / Recommendation:**")
+            st.success(st.session_state.rag_answer)
+        elif st.session_state.rag_answer is None and st.session_state.rag_context == []:
+            st.info("Enter a question and click **Get Answer** to see recommendations.")
+        else:
+            st.warning("No relevant context found in KB.")
 
-# -----------------------------
-# END
-# -----------------------------
-
+    except ModuleNotFoundError:
+        st.error("RAG helper module (`rag_llm_explainer.py`) not available. This feature is optional.")
+    except Exception as e:
+        st.error(f"Unexpected RAG error: {e}")
 
