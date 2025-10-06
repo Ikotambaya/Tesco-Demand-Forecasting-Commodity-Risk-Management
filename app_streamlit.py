@@ -229,81 +229,43 @@ elif view_choice == "Forecasts":
 elif view_choice == "Hedging Simulator":
     st.subheader("🛡️ Hedging Simulation")
 
-    # Simulation controls
-    notional = st.number_input("Notional GBP exposure", value=1_000_000, step=50_000)
-    days = st.slider("Simulation horizon (days)", min_value=30, max_value=180, value=90)
-    n_sims = st.slider("Number of simulations", min_value=200, max_value=2000, value=500)
+    # Load precomputed simulation results from Hugging Face
+    try:
+        summary_path = hf_hub_download(
+            repo_id=DATA_REPO_ID,
+            repo_type=DATA_REPO_TYPE,
+            filename="sim_results/hedge_sim_summary.csv",
+            token=st.secrets["HF_TOKEN"]
+        )
+        scenarios_path = hf_hub_download(
+            repo_id=DATA_REPO_ID,
+            repo_type=DATA_REPO_TYPE,
+            filename="sim_results/hedge_sim_scenarios_top200.csv",
+            token=st.secrets["HF_TOKEN"]
+        )
+        df_summary = pd.read_csv(summary_path)
+        df_scenarios = pd.read_csv(scenarios_path)
+    except Exception as e:
+        st.error(f"❌ Failed to load precomputed simulation results: {e}")
+        df_summary = pd.DataFrame()
+        df_scenarios = pd.DataFrame()
 
-    # Initialize session state
-    if "agg_pnls" not in st.session_state:
-        st.session_state.agg_pnls = None
-    if "sims_dict" not in st.session_state:
-        st.session_state.sims_dict = {}
-
-    run_sim = st.button("Run Simulation")
-
-    # Run simulation if button clicked or previous results exist
-    if run_sim or st.session_state.agg_pnls is not None:
-        if run_sim or st.session_state.agg_pnls is None:
-            from hedging_simulator import load_commodities_safe, residual_bootstrap_sim, compute_pnl_for_basket
-
-            # Load commodity data
-            comm = load_commodities_safe()
-
-            # Define basket
-            basket = {
-                "wheat_spot": {"share": 0.6},
-                "dairy_spot": {"share": 0.3},
-                "oilseed_spot": {"share": 0.1}
-            }
-
-            sims_dict = {}
-            agg_pnls = None
-
-            # Run simulations per commodity
-            for col in basket:
-                sims = residual_bootstrap_sim(comm[col], n_days=days, n_sims=n_sims)
-                sims_dict[col] = sims
-                basket[col]["last_price"] = comm[col].iloc[-1]
-
-            # Compute aggregated P&L
-            for col, info in basket.items():
-                pnl = compute_pnl_for_basket(sims_dict[col], info, notional)
-                agg_pnls = pnl if agg_pnls is None else agg_pnls + pnl
-
-            # Save results to session state
-            st.session_state.agg_pnls = agg_pnls
-            st.session_state.sims_dict = sims_dict
-
-        # Use session_state results for display
-        agg_pnls = st.session_state.agg_pnls
-        sims_dict = st.session_state.sims_dict
-
-        # Summarize and display
-        df_summary = pd.DataFrame({
-            "mean": agg_pnls.mean(axis=0),
-            "p5": np.percentile(agg_pnls, 5, axis=0),
-            "p50": np.percentile(agg_pnls, 50, axis=0),
-            "p95": np.percentile(agg_pnls, 95, axis=0),
-        }, index=pd.RangeIndex(1, agg_pnls.shape[1] + 1))  # Day index
-
+    if not df_summary.empty and not df_scenarios.empty:
+        st.subheader("Aggregated P&L Summary")
         st.line_chart(df_summary[['p5', 'p50', 'p95']])
         st.write("Summary at key horizons:")
-        for d in [29, 59, min(89, days - 1)]:
+        for d in [29, 59, min(89, len(df_summary)-1)]:
             st.write(f"Day {d+1}: mean {df_summary['mean'].iloc[d]:,.0f}, "
                      f"p5 {df_summary['p5'].iloc[d]:,.0f}, "
                      f"p95 {df_summary['p95'].iloc[d]:,.0f}")
 
-        # Display top scenarios for each commodity
-        st.subheader("Top 5 simulated scenarios per commodity (first 10 days)")
-        for com, sims in sims_dict.items():
-            st.write(f"**{com}**")
-            st.dataframe(pd.DataFrame(
-                sims[:5, :10],
-                columns=[f"Day {i+1}" for i in range(10)]
-            ))
-
-        st.success("Simulation complete ✅")
+        st.subheader("Top simulated scenarios (first 10 days)")
+        for col in df_scenarios.columns[:3]:  # assuming first 3 columns are commodities
+            st.write(f"**{col}**")
+            st.dataframe(df_scenarios[col].head(5).to_frame())  # show top 5 scenarios
+        st.success("Simulation results loaded ✅")
+    else:
+        st.warning("Simulation results not available. Ensure files exist on Hugging Face.")
 
 # -----------------------------
 # RAG + LLM Explainer
@@ -327,4 +289,5 @@ elif view_choice == "RAG + LLM Explainer":
             st.success(answer)
         else:
             st.warning("No relevant context found in KB.")
+
 
