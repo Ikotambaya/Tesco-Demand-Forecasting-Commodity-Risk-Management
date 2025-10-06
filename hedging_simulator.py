@@ -5,7 +5,6 @@ import joblib
 from datetime import datetime
 from huggingface_hub import hf_hub_download
 import altair as alt
-from hedging_simulator import run_hedging_sim, load_commodities_safe
 
 # -----------------------------
 # GLOBAL SETTINGS
@@ -170,3 +169,4 @@ elif view_choice == "Hedging Simulator":
         agg_pnls, summary_df, sims_dict = run_hedging_sim(n_days=days, n_sims=n_sims, notional=notional)
         st.line_chart(summary_df[["p5","p50","p95"]])
         st.success("Simulation complete ✅")
+
