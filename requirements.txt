@@ -1,0 +1,12 @@
+pandas
+numpy
+scikit-learn
+joblib
+matplotlib
+streamlit
+openai
+yfinance
+xlsxwriter
+altair
+# Env files
+.env
