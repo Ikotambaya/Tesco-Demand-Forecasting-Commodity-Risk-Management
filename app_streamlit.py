@@ -223,41 +223,56 @@ elif view_choice == "Forecasts":
         else:
             st.error("Commodity forecast model not available")
 
-# -----------------
-# Hedging Simulator
-# -----------------
+# -----------------------------
+# HEDGING SIMULATOR
+# -----------------------------
 elif view_choice == "Hedging Simulator":
-    st.subheader("🛡️ Hedging Simulation")
+    st.subheader("🛡️ Hedging Simulation (Precomputed Results)")
+
+    # Simulation controls (for display purposes only)
     notional = st.number_input("Notional GBP exposure", value=1_000_000, step=50_000)
     days = st.slider("Simulation horizon (days)", min_value=30, max_value=180, value=90)
     n_sims = st.slider("Number of simulations", min_value=200, max_value=2000, value=500)
 
-    if st.button("Run Simulation"):
-        from hedging_simulator import load_commodities_safe, residual_bootstrap_sim, compute_pnl_for_basket
-        comm = load_commodities_safe()
-        basket = {'wheat_spot': {'share':0.6}, 'dairy_spot': {'share':0.3}, 'oilseed_spot': {'share':0.1}}
-        sims_dict, agg_pnls = {}, None
-        for col in basket:
-            sims = residual_bootstrap_sim(comm[col], n_days=days, n_sims=n_sims)
-            sims_dict[col] = sims
-            basket[col]['last_price'] = comm[col].iloc[-1]
-        for col, info in basket.items():
-            pnl = compute_pnl_for_basket(sims_dict[col], info, notional)
-            agg_pnls = pnl if agg_pnls is None else agg_pnls + pnl
+    with st.spinner("📡 Loading precomputed simulation results from Hugging Face..."):
+        try:
+            # Load precomputed summary
+            summary_path = hf_hub_download(
+                repo_id=DATA_REPO_ID,
+                repo_type=DATA_REPO_TYPE,
+                filename="sim_results/hedge_sim_summary.csv",
+                token=st.secrets["HF_TOKEN"]
+            )
+            df_summary = pd.read_csv(summary_path, index_col=0)
 
-        df_summary = pd.DataFrame({
-            "mean": agg_pnls.mean(axis=0),
-            "p5": np.percentile(agg_pnls,5,axis=0),
-            "p50": np.percentile(agg_pnls,50,axis=0),
-            "p95": np.percentile(agg_pnls,95,axis=0),
-        })
-        st.line_chart(df_summary[['p5','p50','p95']])
-        st.write("Summary at key horizons:")
-        for d in [29,59,min(89,days-1)]:
-            st.write(f"Day {d+1}: mean {df_summary['mean'].iloc[d]:,.0f}, "
-                     f"p5 {df_summary['p5'].iloc[d]:,.0f}, "
-                     f"p95 {df_summary['p95'].iloc[d]:,.0f}")
-        st.success("Simulation complete ✅")
+            # Load precomputed top scenarios
+            scenarios_path = hf_hub_download(
+                repo_id=DATA_REPO_ID,
+                repo_type=DATA_REPO_TYPE,
+                filename="sim_results/hedge_sim_scenarios_top200.csv",
+                token=st.secrets["HF_TOKEN"]
+            )
+            df_scenarios = pd.read_csv(scenarios_path, index_col=0)
+
+            # Display summary chart
+            st.line_chart(df_summary[['p5', 'p50', 'p95']])
+            st.write("Summary at key horizons:")
+            for d in [29, 59, min(89, len(df_summary)-1)]:
+                st.write(f"Day {d+1}: mean {df_summary['mean'].iloc[d]:,.0f}, "
+                         f"p5 {df_summary['p5'].iloc[d]:,.0f}, "
+                         f"p95 {df_summary['p95'].iloc[d]:,.0f}")
+
+            # Display top scenarios
+            st.subheader("Top 5 simulated scenarios per commodity (first 10 days)")
+            for com in ["wheat_spot", "dairy_spot", "oilseed_spot"]:
+                st.write(f"**{com}**")
+                cols = [f"Day {i+1}" for i in range(10)]
+                st.dataframe(df_scenarios[df_scenarios['commodity']==com].iloc[:5][cols])
+
+            st.success("Simulation results loaded ✅")
+
+        except Exception as e:
+            st.error(f"❌ Failed to load hedging simulation results: {e}")
 
 # -----------------
 # RAG + LLM Explainer (single-store S01)
@@ -298,3 +313,4 @@ elif view_choice == "RAG + LLM Explainer":
         st.info("Enter a question and click **Get Answer** to see recommendations.")
     else:
         st.warning("No relevant context found in KB.")
+
