@@ -1,13 +1,8 @@
+streamlit
 pandas
 numpy
 scikit-learn
 joblib
-matplotlib
-streamlit
-openai
-yfinance
-xlsxwriter
 altair
 huggingface_hub
-
-.env
+openai
