@@ -21,6 +21,15 @@ from typing import Dict, Any
 # -----------------------------
 # GLOBAL SETTINGS
 # -----------------------------
+
+# -----------------------------
+# DIRECTORY PATHS (Hugging Face structure)
+# -----------------------------
+DATA_DIR = "data"
+MODEL_DIR = "models"
+KNOW_DIR = "knowledge"
+SIM_DIR = "sim_results"
+
 DATA_REPO_ID = "Uyane/tesco-project"
 DATA_REPO_TYPE = "dataset"  # everything is in the dataset repo
 
@@ -434,3 +443,4 @@ elif view_choice == "RAG + LLM Explainer":
 # -----------------------------
 # END
 # -----------------------------
+
